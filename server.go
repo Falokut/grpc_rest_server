@@ -22,12 +22,13 @@ import (
 )
 
 type server struct {
-	service        any
-	logger         *logrus.Logger
-	grpcServer     *grpc.Server
-	AllowedHeaders []string
-	im             *interceptors.InterceptorManager
-	mux            cmux.CMux
+	service                any
+	logger                 *logrus.Logger
+	grpcServer             *grpc.Server
+	AllowedHeaders         []string
+	AllowedOutgoingHeaders map[string]string
+	im                     *interceptors.InterceptorManager
+	mux                    cmux.CMux
 }
 
 func NewServer(logger *logrus.Logger, service any) server {
@@ -35,10 +36,11 @@ func NewServer(logger *logrus.Logger, service any) server {
 }
 
 type Config struct {
-	Host           string
-	Port           string
-	Mode           string
-	AllowedHeaders []string
+	Host                   string
+	Port                   string
+	Mode                   string
+	AllowedHeaders         []string
+	AllowedOutgoingHeaders map[string]string
 
 	ServiceDesc               *grpc.ServiceDesc
 	RegisterRestHandlerServer func(ctx context.Context, mux *runtime.ServeMux, service any) error
@@ -54,6 +56,7 @@ func (s *server) Run(cfg Config, metric interceptors.Metrics, grpcOptions *[]grp
 	s.mux = cmux.New(lis)
 	s.im = interceptors.NewInterceptorManager(s.logger, metric)
 	s.AllowedHeaders = cfg.AllowedHeaders
+	s.AllowedOutgoingHeaders = cfg.AllowedOutgoingHeaders
 
 	switch Mode {
 	case "REST":
@@ -108,6 +111,7 @@ func (s *server) runRestAPI(cfg Config, mux *runtime.ServeMux) {
 	if mux == nil {
 		mux = runtime.NewServeMux(
 			runtime.WithIncomingHeaderMatcher(s.headerMatcherFunc),
+			runtime.WithOutgoingHeaderMatcher(s.outgoingHeaderMatcher),
 		)
 	}
 
@@ -148,5 +152,15 @@ func (s *server) headerMatcherFunc(header string) (string, bool) {
 		}
 	}
 
+	return runtime.DefaultHeaderMatcher(header)
+}
+
+func (s *server) outgoingHeaderMatcher(header string) (string, bool) {
+	s.logger.Debugf("Outgoing %s header", header)
+	for preatyHeaderName, AllowedHeader := range s.AllowedOutgoingHeaders {
+		if header == AllowedHeader {
+			return preatyHeaderName, true
+		}
+	}
 	return runtime.DefaultHeaderMatcher(header)
 }
