@@ -121,7 +121,7 @@ func (s *server) runRestAPI(cfg Config, mux *runtime.ServeMux) {
 	}
 
 	server := http.Server{
-		Handler: s.im.RestLogger(s.im.RestMetrics(mux)),
+		Handler: s.im.RestTracer(s.im.RestLogger(s.im.RestMetrics(mux))),
 	}
 
 	s.logger.Info("Rest server initializing")
