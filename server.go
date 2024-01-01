@@ -2,6 +2,7 @@ package grpc_rest_server
 
 import (
 	"context"
+	"crypto/tls"
 	"fmt"
 	"net"
 	"net/http"
@@ -18,6 +19,7 @@ import (
 	"github.com/grpc-ecosystem/grpc-gateway/v2/runtime"
 	"github.com/grpc-ecosystem/grpc-opentracing/go/otgrpc"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
 )
 
@@ -44,6 +46,14 @@ type Config struct {
 
 	ServiceDesc               *grpc.ServiceDesc
 	RegisterRestHandlerServer func(ctx context.Context, mux *runtime.ServeMux, service any) error
+	// By default 4 mb
+	MaxRequestSize int
+	// By default 4 mb
+	MaxResponceSize int
+	// Cert == nil, then insecure credentials will be used, only for grpc
+	Cert *tls.Certificate
+	// Used for REST
+	TlsConfig *tls.Config
 }
 
 func (s *server) Run(cfg Config, metric interceptors.Metrics, grpcOptions *[]grpc.ServerOption, customRestMux *runtime.ServeMux) {
@@ -57,6 +67,13 @@ func (s *server) Run(cfg Config, metric interceptors.Metrics, grpcOptions *[]grp
 	s.im = interceptors.NewInterceptorManager(s.logger, metric)
 	s.AllowedHeaders = cfg.AllowedHeaders
 	s.AllowedOutgoingHeaders = cfg.AllowedOutgoingHeaders
+
+	if cfg.MaxRequestSize <= 0 {
+		cfg.MaxRequestSize = 4 * mb
+	}
+	if cfg.MaxResponceSize <= 0 {
+		cfg.MaxResponceSize = 4 * mb
+	}
 
 	switch Mode {
 	case "REST":
@@ -75,24 +92,43 @@ func (s *server) Run(cfg Config, metric interceptors.Metrics, grpcOptions *[]grp
 	s.logger.Info("server running on mode: " + Mode)
 }
 
+func (s *server) GetDefaultOptions() *[]grpc.ServerOption {
+	return &[]grpc.ServerOption{grpc.UnaryInterceptor(s.im.Logger), grpc.ChainUnaryInterceptor(
+		otgrpc.OpenTracingServerInterceptor(opentracing.GlobalTracer()),
+		grpc_ctxtags.UnaryServerInterceptor(),
+		s.im.Metrics,
+		grpcrecovery.UnaryServerInterceptor(),
+	), grpc.StreamInterceptor(s.im.StreamLogger), grpc.ChainStreamInterceptor(
+		otgrpc.OpenTracingStreamServerInterceptor(opentracing.GlobalTracer()),
+		grpc_ctxtags.StreamServerInterceptor(),
+		s.im.StreamMetrics,
+		grpcrecovery.StreamServerInterceptor(),
+	),
+	}
+}
+
+const (
+	kb = 8 << 10
+	mb = kb << 10
+)
+
+// in server options mustn't be MaxRecvMsgSize,MaxSendMsgSize and any credentials, specify params in config
 func (s *server) runGRPC(cfg Config, serverOptions *[]grpc.ServerOption) {
 	s.logger.Info("GRPC server initializing")
 
-	if serverOptions == nil || len(*serverOptions) < 1 {
-		serverOptions = &[]grpc.ServerOption{grpc.UnaryInterceptor(s.im.Logger), grpc.ChainUnaryInterceptor(
-			otgrpc.OpenTracingServerInterceptor(opentracing.GlobalTracer()),
-			grpc_ctxtags.UnaryServerInterceptor(),
-			s.im.Metrics,
-			grpcrecovery.UnaryServerInterceptor(),
-		), grpc.StreamInterceptor(s.im.StreamLogger), grpc.ChainStreamInterceptor(
-			otgrpc.OpenTracingStreamServerInterceptor(opentracing.GlobalTracer()),
-			grpc_ctxtags.StreamServerInterceptor(),
-			s.im.StreamMetrics,
-			grpcrecovery.StreamServerInterceptor(),
-		), grpc.Creds(insecure.NewCredentials()),
-		}
+	var creds grpc.ServerOption
+	if cfg.Cert == nil {
+		creds = grpc.Creds(insecure.NewCredentials())
+	} else {
+		grpc.Creds(credentials.NewServerTLSFromCert(cfg.Cert))
+	}
+	if serverOptions == nil || len(*serverOptions) == 0 {
+		serverOptions = s.GetDefaultOptions()
 	}
 
+	*serverOptions = append(*serverOptions, creds,
+		grpc.MaxRecvMsgSize(cfg.MaxRequestSize),
+		grpc.MaxSendMsgSize(cfg.MaxResponceSize))
 	s.grpcServer = grpc.NewServer(*serverOptions...)
 
 	s.grpcServer.RegisterService(cfg.ServiceDesc, s.service)
@@ -117,11 +153,11 @@ func (s *server) runRestAPI(cfg Config, mux *runtime.ServeMux) {
 
 	if err := cfg.RegisterRestHandlerServer(context.Background(), mux, s.service); err != nil {
 		s.logger.Fatalf("REST server error while registering handler server: %v", err)
-
 	}
 
 	server := http.Server{
-		Handler: s.im.RestTracer(s.im.RestLogger(s.im.RestMetrics(mux))),
+		Handler:   s.im.RestTracer(s.im.RestLogger(s.im.RestMetrics(mux))),
+		TLSConfig: cfg.TlsConfig,
 	}
 
 	s.logger.Info("Rest server initializing")
