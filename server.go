@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/Falokut/interceptors"
 	"github.com/opentracing/opentracing-go"
@@ -27,14 +28,17 @@ type server struct {
 	service                any
 	logger                 *logrus.Logger
 	grpcServer             *grpc.Server
+	restServer             *http.Server
 	AllowedHeaders         []string
 	AllowedOutgoingHeaders map[string]string
 	im                     *interceptors.InterceptorManager
 	mux                    cmux.CMux
+	errCh                  chan error
 }
 
 func NewServer(logger *logrus.Logger, service any) server {
-	return server{logger: logger, service: service}
+	errCh := make(chan error)
+	return server{logger: logger, service: service, errCh: errCh}
 }
 
 type Config struct {
@@ -56,12 +60,14 @@ type Config struct {
 	TlsConfig *tls.Config
 }
 
-func (s *server) Run(cfg Config, metric interceptors.Metrics, grpcOptions *[]grpc.ServerOption, customRestMux *runtime.ServeMux) {
+func (s *server) Run(cfg Config, metric interceptors.Metrics,
+	grpcOptions *[]grpc.ServerOption, customRestMux *runtime.ServeMux) error {
 	Mode := strings.ToUpper(cfg.Mode)
 	s.logger.Info("start running server on mode: " + Mode)
 	lis, err := net.Listen("tcp", fmt.Sprintf("%s:%s", cfg.Host, cfg.Port))
 	if err != nil {
-		s.logger.Fatal("error while listening", err)
+		s.logger.Error("error while creating listener ", err)
+		return err
 	}
 	s.mux = cmux.New(lis)
 	s.im = interceptors.NewInterceptorManager(s.logger, metric)
@@ -80,16 +86,19 @@ func (s *server) Run(cfg Config, metric interceptors.Metrics, grpcOptions *[]grp
 		s.runRestAPI(cfg, customRestMux)
 	case "GRPC":
 		s.runGRPC(cfg, grpcOptions)
+		grpc_prometheus.Register(s.grpcServer)
 	case "BOTH":
 		s.runRestAPI(cfg, customRestMux)
 		s.runGRPC(cfg, grpcOptions)
+		grpc_prometheus.Register(s.grpcServer)
 	}
 	if err := s.mux.Serve(); err != nil {
-		s.logger.Fatal(err)
+		s.logger.Errorf("error while mux serving %s", err)
+		return err
 	}
-	grpc_prometheus.Register(s.grpcServer)
 
 	s.logger.Info("server running on mode: " + Mode)
+	return <-s.errCh
 }
 
 func (s *server) GetDefaultOptions() *[]grpc.ServerOption {
@@ -135,7 +144,9 @@ func (s *server) runGRPC(cfg Config, serverOptions *[]grpc.ServerOption) {
 	go func() {
 		grpcL := s.mux.Match(cmux.HTTP2HeaderField("content-type", "application/grpc"))
 		if err := s.grpcServer.Serve(grpcL); err != nil {
-			s.logger.Fatalf("GRPC error while serving: %v", err)
+			s.logger.Errorf("GRPC error while serving: %v", err)
+			s.errCh <- err
+			return
 		}
 	}()
 	s.logger.Infof("GRPC server initialized. Listen on %s:%s", cfg.Host, cfg.Port)
@@ -152,10 +163,12 @@ func (s *server) runRestAPI(cfg Config, mux *runtime.ServeMux) {
 	}
 
 	if err := cfg.RegisterRestHandlerServer(context.Background(), mux, s.service); err != nil {
-		s.logger.Fatalf("REST server error while registering handler server: %v", err)
+		s.logger.Errorf("REST server error while registering handler server: %v", err)
+		s.errCh <- err
+		return
 	}
 
-	server := http.Server{
+	s.restServer = &http.Server{
 		Handler:   s.im.RestTracer(s.im.RestLogger(s.im.RestMetrics(mux))),
 		TLSConfig: cfg.TlsConfig,
 	}
@@ -164,8 +177,10 @@ func (s *server) runRestAPI(cfg Config, mux *runtime.ServeMux) {
 	go func() {
 		restL := s.mux.Match(cmux.HTTP1Fast())
 
-		if err := server.Serve(restL); err != nil {
-			s.logger.Fatalf("REST server error while serving: %v", err)
+		if err := s.restServer.Serve(restL); err != nil {
+			s.logger.Errorf("REST server error while serving: %v", err)
+			s.errCh <- err
+			return
 		}
 	}()
 
@@ -176,6 +191,14 @@ func (s *server) Shutdown() {
 	s.logger.Println("Shutting down")
 	if s.grpcServer != nil {
 		s.grpcServer.GracefulStop()
+	}
+	if s.restServer != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second*5)
+		defer cancel()
+		err := s.restServer.Shutdown(ctx)
+		if err != nil {
+			s.logger.Errorf("error while shutting down rest server: %v", err)
+		}
 	}
 	s.mux.Close()
 }
