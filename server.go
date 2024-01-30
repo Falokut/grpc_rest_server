@@ -102,17 +102,19 @@ func (s *server) Run(cfg Config, metric interceptors.Metrics,
 }
 
 func (s *server) GetDefaultOptions() *[]grpc.ServerOption {
-	return &[]grpc.ServerOption{grpc.UnaryInterceptor(s.im.Logger), grpc.ChainUnaryInterceptor(
-		otgrpc.OpenTracingServerInterceptor(opentracing.GlobalTracer()),
-		grpc_ctxtags.UnaryServerInterceptor(),
-		s.im.Metrics,
-		grpcrecovery.UnaryServerInterceptor(),
-	), grpc.StreamInterceptor(s.im.StreamLogger), grpc.ChainStreamInterceptor(
-		otgrpc.OpenTracingStreamServerInterceptor(opentracing.GlobalTracer()),
-		grpc_ctxtags.StreamServerInterceptor(),
-		s.im.StreamMetrics,
-		grpcrecovery.StreamServerInterceptor(),
-	),
+	return &[]grpc.ServerOption{grpc.UnaryInterceptor(s.im.Logger),
+		grpc.ChainUnaryInterceptor(grpcrecovery.UnaryServerInterceptor(),
+			otgrpc.OpenTracingServerInterceptor(
+				opentracing.GlobalTracer()),
+			grpc_ctxtags.UnaryServerInterceptor(),
+			s.im.Metrics,
+		),
+		grpc.StreamInterceptor(s.im.StreamLogger), grpc.ChainStreamInterceptor(
+			grpcrecovery.StreamServerInterceptor(),
+			otgrpc.OpenTracingStreamServerInterceptor(opentracing.GlobalTracer()),
+			grpc_ctxtags.StreamServerInterceptor(),
+			s.im.StreamMetrics,
+		),
 	}
 }
 
@@ -169,7 +171,7 @@ func (s *server) runRestAPI(cfg Config, mux *runtime.ServeMux) {
 	}
 
 	s.restServer = &http.Server{
-		Handler:   s.im.RestTracer(s.im.RestLogger(s.im.RestMetrics(mux))),
+		Handler:   s.panicRecovery(s.im.RestTracer(s.im.RestLogger(s.im.RestMetrics(mux)))),
 		TLSConfig: cfg.TlsConfig,
 	}
 
@@ -185,6 +187,21 @@ func (s *server) runRestAPI(cfg Config, mux *runtime.ServeMux) {
 	}()
 
 	s.logger.Infof("REST server initialized. Listen on %s:%s", cfg.Host, cfg.Port)
+}
+
+func (s *server) panicRecovery(handler http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer func() {
+			err := recover()
+			if err != nil {
+				http.Error(w, fmt.Sprintf("%s %v", http.StatusText(http.StatusInternalServerError), err),
+					http.StatusInternalServerError)
+				s.logger.Errorf("rest panic recovered: %v", err)
+				return
+			}
+		}()
+		handler.ServeHTTP(w, r)
+	})
 }
 
 func (s *server) Shutdown() {
