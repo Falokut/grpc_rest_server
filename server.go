@@ -14,7 +14,6 @@ import (
 	"github.com/sirupsen/logrus"
 	"github.com/soheilhy/cmux"
 
-	grpcrecovery "github.com/grpc-ecosystem/go-grpc-middleware/recovery"
 	grpc_ctxtags "github.com/grpc-ecosystem/go-grpc-middleware/tags"
 	grpc_prometheus "github.com/grpc-ecosystem/go-grpc-prometheus"
 	"github.com/grpc-ecosystem/grpc-gateway/v2/runtime"
@@ -103,16 +102,17 @@ func (s *server) Run(cfg Config, metric interceptors.Metrics,
 
 func (s *server) GetDefaultOptions() *[]grpc.ServerOption {
 	return &[]grpc.ServerOption{grpc.UnaryInterceptor(s.im.Logger),
-		grpc.ChainUnaryInterceptor(grpcrecovery.UnaryServerInterceptor(),
-			otgrpc.OpenTracingServerInterceptor(
-				opentracing.GlobalTracer()),
+		grpc.ChainUnaryInterceptor(
+			s.im.GrpcUnaryServerPanicRecover,
 			grpc_ctxtags.UnaryServerInterceptor(),
+			otgrpc.OpenTracingServerInterceptor(opentracing.GlobalTracer()),
 			s.im.Metrics,
 		),
-		grpc.StreamInterceptor(s.im.StreamLogger), grpc.ChainStreamInterceptor(
-			grpcrecovery.StreamServerInterceptor(),
-			otgrpc.OpenTracingStreamServerInterceptor(opentracing.GlobalTracer()),
+		grpc.StreamInterceptor(s.im.StreamLogger),
+		grpc.ChainStreamInterceptor(
+			s.im.GrpcStreamServerPanicRecover,
 			grpc_ctxtags.StreamServerInterceptor(),
+			otgrpc.OpenTracingStreamServerInterceptor(opentracing.GlobalTracer()),
 			s.im.StreamMetrics,
 		),
 	}
@@ -171,7 +171,7 @@ func (s *server) runRestAPI(cfg Config, mux *runtime.ServeMux) {
 	}
 
 	s.restServer = &http.Server{
-		Handler:   s.panicRecovery(s.im.RestTracer(s.im.RestLogger(s.im.RestMetrics(mux)))),
+		Handler:   s.im.RestPanicRecover(s.im.RestTracer(s.im.RestLogger(s.im.RestMetrics(mux)))),
 		TLSConfig: cfg.TlsConfig,
 	}
 
@@ -187,21 +187,6 @@ func (s *server) runRestAPI(cfg Config, mux *runtime.ServeMux) {
 	}()
 
 	s.logger.Infof("REST server initialized. Listen on %s:%s", cfg.Host, cfg.Port)
-}
-
-func (s *server) panicRecovery(handler http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		defer func() {
-			err := recover()
-			if err != nil {
-				http.Error(w, fmt.Sprintf("%s %v", http.StatusText(http.StatusInternalServerError), err),
-					http.StatusInternalServerError)
-				s.logger.Errorf("rest panic recovered: %v", err)
-				return
-			}
-		}()
-		handler.ServeHTTP(w, r)
-	})
 }
 
 func (s *server) Shutdown() {

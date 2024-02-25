@@ -14,8 +14,7 @@ require (
 )
 
 require (
-	github.com/Falokut/grpc_errors v1.0.0 // indirect
-	github.com/Falokut/interceptors v1.0.3
+	github.com/Falokut/interceptors v1.0.4
 	github.com/beorn7/perks v1.0.1 // indirect
 	github.com/cespare/xxhash/v2 v2.2.0 // indirect
 	github.com/felixge/httpsnoop v1.0.4 // indirect

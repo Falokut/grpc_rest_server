@@ -6,6 +6,8 @@ github.com/Falokut/interceptors v1.0.2 h1:ub2ulW5yyGe3ce43ZoKOpwCa1O+YEryNbBgFd5
 github.com/Falokut/interceptors v1.0.2/go.mod h1:TWflfMzIINRNvfp61dkznvzXwdrV1pxkHzybVZK/cgw=
 github.com/Falokut/interceptors v1.0.3 h1:lRPEFpyF90tsIBVhYowAG90cUy8X04ODlSgokaQkSLI=
 github.com/Falokut/interceptors v1.0.3/go.mod h1:TWflfMzIINRNvfp61dkznvzXwdrV1pxkHzybVZK/cgw=
+github.com/Falokut/interceptors v1.0.4 h1:fraGr7xNf8w5Do+1Zr7YuSmmjY1rkJidBgXEvhvNCck=
+github.com/Falokut/interceptors v1.0.4/go.mod h1:TWflfMzIINRNvfp61dkznvzXwdrV1pxkHzybVZK/cgw=
 github.com/benbjohnson/clock v1.1.0/go.mod h1:J11/hYXuz8f4ySSvYwY0FKfm+ezbsZBKZxNJlLklBHA=
 github.com/beorn7/perks v1.0.1 h1:VlbKKnNfV8bJzeqoa4cOKqO6bYr3WgKZxO8Z16+hsOM=
 github.com/beorn7/perks v1.0.1/go.mod h1:G2ZrVWU2WbWT9wwq4/hrbKbnv/1ERSJQ0ibhJ6rlkpw=
